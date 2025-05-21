@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Iconimo</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0e1117;
+      font-family: Inter, sans-serif;
+      color: #fff;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #app {
+      position: relative;
+      z-index: 2;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    button {
+      background: #1f6feb;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 16px;
+      font-size: 14px;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #388bfd;
+    }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+    }
+
+    #description {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 12px;
+      padding: 20px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      line-height: 1.5;
+      color: #ccc;
+    }
+
+    #description strong {
+      color: #fff;
+    }
+
+    #description kbd {
+      background: #1f6feb;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      color: white;
+    }
+
+  </style>
+</head>
+<body>
+  <canvas id="bg"></canvas>
+  <div id="app">
+    <button id="start">Start</button>
+    <button id="select-regular">Select Regular</button>
+    <button id="select-bold">Select Bold</button>
+  </div>
+  <div id="description">
+    <p>
+      Nejprve klikni na <strong>Start</strong> pro zpracování ikon.<br>
+      Poté použij <strong>Select Regular</strong> nebo <strong>Select Bold</strong> pro výběr ikon podle stylu.<br>
+      Ikony budou připravené na <strong>SVG export</strong> – stačí stisknout <kbd>Ctrl+Shift+E</kbd> nebo zvolit <em>File → Export</em>.
+    </p>
+  </div>
+
+  <script>
+    document.getElementById('start').onclick = () => {
+      parent.postMessage({ pluginMessage: { type: 'start-processing' } }, '*');
+    };
+    document.getElementById('select-regular').onclick = () => {
+      parent.postMessage({ pluginMessage: { type: 'select-icons', style: 'regular' } }, '*');
+    };
+    document.getElementById('select-bold').onclick = () => {
+      parent.postMessage({ pluginMessage: { type: 'select-icons', style: 'bold' } }, '*');
+    };
+
+    // simple animated lines reacting to mouse
+    const canvas = document.getElementById('bg');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+    let lines = [];
+
+    function resize() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+      lines = Array.from({ length: 20 }, () => ({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        angle: Math.random() * Math.PI * 2,
+        speed: 0.5 + Math.random(),
+        length: 80 + Math.random() * 50
+      }));
+    }
+
+    function animate() {
+      ctx.clearRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.lineWidth = 1;
+
+      for (let line of lines) {
+        ctx.beginPath();
+        const x2 = line.x + Math.cos(line.angle) * line.length;
+        const y2 = line.y + Math.sin(line.angle) * line.length;
+        ctx.moveTo(line.x, line.y);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+
+        line.x += Math.cos(line.angle) * line.speed;
+        line.y += Math.sin(line.angle) * line.speed;
+
+        if (line.x < 0 || line.x > width || line.y < 0 || line.y > height) {
+          line.x = Math.random() * width;
+          line.y = Math.random() * height;
+        }
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+    animate();
+  </script>
+</body>
+</html>

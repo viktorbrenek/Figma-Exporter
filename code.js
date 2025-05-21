@@ -1,0 +1,421 @@
+figma.showUI(__html__, { width: 300, height: 400 });
+
+figma.ui.onmessage = async (msg) => {
+    if (msg.type === 'start-processing') {
+        const targetFrameNames = ['regular', 'bold'];
+        let allProcessedNodes = [];
+        let colorLayersToRemove = [];
+
+        function findAllNodes(nodes) {
+            let result = [];
+            for (const node of nodes) {
+                if (node.removed) continue;
+                result.push(node);
+                if ('children' in node) {
+                    result.push(...findAllNodes(node.children));
+                }
+            }
+            return result;
+        }
+
+        function processNodes(nodes) {
+            let collected = [];
+
+            nodes.forEach(node => {
+                if (node.removed) return;
+
+                if (node.type === 'INSTANCE') {
+                    try {
+                        const detached = node.detachInstance();
+                        if (detached) {
+                            collected.push(detached);
+                            if ('children' in detached) {
+                                collected.push(...processNodes(detached.children));
+                            }
+                        }
+                    } catch (e) {
+                        console.warn(`Detach error on ${node.id}`, e);
+                    }
+                } else {
+                    collected.push(node);
+                    if ('children' in node) {
+                        collected.push(...processNodes(node.children));
+                    }
+                }
+            });
+
+            return collected;
+        }
+
+        for (const frameName of targetFrameNames) {
+            const frames = figma.currentPage.findAll(n => n.type === 'FRAME' && n.name === frameName);
+            for (const frame of frames) {
+                const nodes = findAllNodes([frame]);
+                const processed = processNodes(nodes);
+                allProcessedNodes.push(...processed);
+            }
+        }
+
+        // Odstranění "color" vrstev
+        allProcessedNodes.forEach(node => {
+            if (node.removed) return;
+            if (node.name === 'color' && ['FRAME', 'GROUP', 'INSTANCE'].includes(node.type)) {
+                colorLayersToRemove.push(node);
+            }
+        });
+
+        colorLayersToRemove.forEach(node => {
+            try {
+                if (node.removed) return;
+                if (node.type === 'INSTANCE') {
+                    const detached = node.detachInstance();
+                    if (detached) {
+                        detached.remove();
+                    }
+                } else {
+                    node.remove();
+                }
+            } catch (e) {
+                console.warn(`Chyba při mazání vrstvy: ${node.id}`, e);
+            }
+        });
+
+        // Unmask
+        allProcessedNodes.forEach(node => {
+            if (node.removed) return;
+            if ('isMask' in node && node.isMask) {
+                node.isMask = false;
+            }
+        });
+
+        // Apply black fill
+        allProcessedNodes.forEach(node => {
+            if (node.removed) return;
+            if ('fills' in node && Array.isArray(node.fills) && node.fills.length > 0) {
+                try {
+                    node.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
+                } catch (e) {}
+            }
+        });
+
+        // Convert frames to groups
+const framesToConvert = allProcessedNodes.filter(n =>
+    n.type === 'FRAME' &&
+    n.name !== 'regular' &&
+    n.name !== 'bold' &&
+    n.parent &&
+    n.parent.type === 'FRAME' &&
+    n.parent.name !== 'regular' &&
+    n.parent.name !== 'bold' &&
+    n.parent.parent &&
+    n.parent.parent.type === 'FRAME' &&
+    (n.parent.parent.name === 'regular' || n.parent.parent.name === 'bold')
+);
+        for (const frame of framesToConvert) {
+            if (frame.removed || !frame.parent || !('children' in frame)) continue;
+            const group = figma.group([...frame.children], frame.parent);
+            group.name = frame.name;
+            frame.remove();
+        }
+
+        function isInsideNamedFrame(node, frameNames) {
+            let current = node.parent;
+            while (current) {
+                if (current.type === 'FRAME' && frameNames.includes(current.name)) {
+                    return true;
+                }
+                current = current.parent;
+            }
+            return false;
+        }
+
+        function findLeafGroup(node) {
+            let current = node;
+
+            while (current.parent) {
+                const parent = current.parent;
+
+                if (
+                    (parent.type === 'GROUP' || parent.type === 'FRAME') &&
+                    parent.name !== 'regular' &&
+                    parent.name !== 'bold' &&
+                    'children' in parent
+                ) {
+                    // Pokud parent obsahuje jinou groupu, NEchceme ho
+                    const hasNestedGroup = parent.children.some(
+                        child => (child.type === 'GROUP' || child.type === 'FRAME') && child.id !== current.id
+                    );
+
+                    if (hasNestedGroup) {
+                        break; // zůstáváme na aktuálním
+                    } else {
+                        current = parent;
+                        continue;
+                    }
+                }
+
+                break;
+            }
+
+            return current;
+        }
+
+        const iconContainers = new Set();
+
+        for (const node of allProcessedNodes) {
+            if (node.removed) continue;
+
+            const group = findLeafGroup(node);
+
+            if (
+                (group.type === 'GROUP' || group.type === 'FRAME') &&
+                group.name !== 'regular' &&
+                group.name !== 'bold'
+            ) {
+                iconContainers.add(group);
+            }
+        }
+
+        const validSelection = Array.from(iconContainers).filter(n => {
+            try {
+                return !n.removed && figma.getNodeById(n.id);
+            } catch (e) {
+                return false;
+            }
+        });
+
+    // Ulož rozměry ikon před exportem
+    const originalFrames = new Map();
+
+    for (const group of iconContainers) {
+        if ('x' in group && 'y' in group && 'width' in group && 'height' in group) {
+            originalFrames.set(group.id, {
+                x: group.x,
+                y: group.y,
+                width: group.width,
+                height: group.height,
+            });
+        }
+    }
+
+    figma.currentPage.selection = validSelection;
+    figma.notify(`Hotovo: ${validSelection.length} ikon připraveno k exportu.`);
+
+    // Obnov původní rozměry
+    for (const node of validSelection) {
+        if (node.removed || !node.parent) continue;
+
+        // Vytvoř nový 24x24 frame
+        const wrapper = figma.createFrame();
+        wrapper.resize(24, 24);
+        wrapper.layoutMode = 'NONE';
+        wrapper.name = node.name;
+        wrapper.x = node.x;
+        wrapper.y = node.y;
+        wrapper.fills = [];
+
+        // Přesun původního node do obalu
+        wrapper.appendChild(node);
+
+        // Zarovnání doprostřed
+        node.x = (24 - node.width) / 2;
+        node.y = (24 - node.height) / 2;
+    }
+
+
+    }
+
+
+
+    // Zbytek zachován z původního funkčního kódu
+    if (msg.type === 'find-symbols') {
+        const searchKeyword = msg.query.toLowerCase();
+        const selection = figma.currentPage.selection;
+        let matchingNodes = [];
+
+        function findMatchingLayers(nodes) {
+            for (const node of nodes) {
+                if ('name' in node && node.name.toLowerCase().includes(searchKeyword)) {
+                    matchingNodes.push(node);
+                }
+                if ('children' in node && node.children.length > 0) {
+                    findMatchingLayers(node.children);
+                }
+            }
+        }
+
+        selection.forEach(node => {
+            if ('children' in node && node.children.length > 0) {
+                findMatchingLayers(node.children);
+            }
+        });
+
+        if (matchingNodes.length) {
+            figma.currentPage.selection = matchingNodes;
+            figma.notify(`Označeno ${matchingNodes.length} vrstev obsahujících "${searchKeyword}"`);
+        } else {
+            figma.notify('Nebyly nalezeny žádné odpovídající vrstvy v označené skupině.');
+        }
+    }
+
+    if (msg.type === 'process-symbols') {
+        const selection = figma.currentPage.selection;
+        let allNodes = [];
+        let colorLayersToRemove = [];
+
+        function processNodes(nodes) {
+            nodes.forEach(node => {
+                if (node.removed) return;
+                if (node.type === 'INSTANCE') {
+                    const detached = node.detachInstance();
+                    if (detached) {
+                        allNodes.push(detached);
+                        if ('children' in detached) {
+                            processNodes(detached.children);
+                        }
+                    }
+                } else {
+                    allNodes.push(node);
+                    if ('children' in node) {
+                        processNodes(node.children);
+                    }
+                }
+            });
+        }
+        processNodes(selection);
+
+        function unmaskLayers(nodes) {
+            nodes.forEach(node => {
+                if (node.removed) return;
+                if ('isMask' in node && node.isMask) {
+                    node.isMask = false;
+                }
+                if ('children' in node && node.children.length > 0) {
+                    unmaskLayers(node.children);
+                }
+            });
+        }
+        unmaskLayers(allNodes);
+
+        function collectColorLayers(nodes) {
+            nodes.forEach(node => {
+                if (node.removed) return;
+                if (node.name === 'color' && (node.type === 'FRAME' || node.type === 'GROUP' || node.type === 'INSTANCE')) {
+                    colorLayersToRemove.push(node);
+                }
+                if ('children' in node && node.children.length > 0) {
+                    collectColorLayers(node.children);
+                }
+            });
+        }
+        collectColorLayers(allNodes);
+
+        colorLayersToRemove.forEach(node => {
+            try {
+                if (node.removed) return;
+                if (node.type === 'INSTANCE') {
+                    const detached = node.detachInstance();
+                    if (detached) {
+                        detached.remove();
+                    }
+                } else {
+                    node.remove();
+                }
+            } catch (e) {
+                console.warn(`Chyba při mazání vrstvy: ${node.id}`, e);
+            }
+        });
+
+        function hideColorLayers(nodes) {
+            nodes.forEach(node => {
+                if (node.removed) return;
+                if (node.name === 'color' && (node.type === 'FRAME' || node.type === 'GROUP' || node.type === 'INSTANCE')) {
+                    node.visible = false;
+                }
+                if ('children' in node && node.children.length > 0) {
+                    hideColorLayers(node.children);
+                }
+            });
+        }
+        hideColorLayers(allNodes);
+
+        function applyBlackFill(nodes) {
+            nodes.forEach(node => {
+                if (node.removed) return;
+                if ('fills' in node && Array.isArray(node.fills) && node.fills.length > 0) {
+                    node.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
+                }
+                if ('children' in node && node.children.length > 0) {
+                    applyBlackFill(node.children);
+                }
+            });
+        }
+        applyBlackFill(allNodes);
+
+        function convertFramesToGroups(nodes) {
+            let framesToConvert = [];
+
+            function findFrames(nodes) {
+                nodes.forEach(node => {
+                    if (node.removed) return;
+                    if ('children' in node && node.children.length > 0) {
+                        node.children.forEach(child => {
+                            if (child.type === 'FRAME') {
+                                framesToConvert.push(child);
+                            }
+                        });
+                        findFrames(node.children);
+                    }
+                });
+            }
+
+            findFrames(nodes);
+
+            framesToConvert.forEach(frame => {
+                if (frame.removed) return;
+                const parent = frame.parent;
+                if (parent) {
+                    const newGroup = figma.group([...frame.children], parent);
+                    newGroup.name = frame.name;
+                    frame.remove();
+                }
+            });
+        }
+
+        convertFramesToGroups(allNodes);
+
+        figma.notify(`Zpracováno: ${allNodes.length} symbolů/vrstev, ${colorLayersToRemove.length} odstraněných "color" vrstev, skryty zbývající "color" vrstvy, aplikována černá barva na všechny vrstvy a jejich potomky. Převedeny všechny framy a jejich child vrstvy na skupiny.`);
+    }
+    if (msg.type === 'select-icons') {
+    const styleName = msg.style; // 'regular' nebo 'bold'
+    const root = figma.currentPage.findOne(n => n.type === 'FRAME' && n.name === styleName);
+
+    if (!root) {
+        figma.notify(`Frame "${styleName}" nebyl nalezen.`);
+        return;
+    }
+
+    const selection = [];
+
+    for (const category of root.children) {
+        if (category.type === 'FRAME') {
+            for (const icon of category.children) {
+                if (icon.type === 'FRAME') {
+                    selection.push(icon);
+                }
+            }
+        }
+    }
+
+        for (const node of selection) {
+        if ('exportSettings' in node) {
+            node.exportSettings = [{ format: 'SVG' }];
+        }
+    }
+
+    figma.currentPage.selection = selection;
+    figma.notify(`Označeno ${selection.length} ikon ve stylu "${styleName}" a nastaveno na SVG export.`);
+
+}
+
+};
